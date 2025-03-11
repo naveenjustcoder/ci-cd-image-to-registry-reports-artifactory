@@ -1,0 +1,1 @@
+# ci-cd-image-to-registry-reports-artifactory
