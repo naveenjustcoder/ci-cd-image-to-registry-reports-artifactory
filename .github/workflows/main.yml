@@ -1,0 +1,106 @@
+name: CI/CD Pipeline
+
+on:
+  pull_request:
+    branches:
+      - dev
+  push:
+    branches:
+      - dev
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Java (if using Java/Maven)
+        uses: actions/setup-java@v2
+        with:
+          java-version: '11' # Adjust according to your Java version
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: 'us-west-2'
+
+      - name: Set up DockerHub Credentials
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Run Unit Tests
+      - name: Run unit tests
+        run: |
+          mvn clean test
+
+      # Run Code Coverage (JaCoCo example)
+      - name: Run code coverage
+        run: |
+          mvn jacoco:report
+
+      # SonarQube analysis
+      - name: SonarQube analysis
+        uses: sonarsource/sonarcloud-github-action@v1
+        with:
+          organization: your-sonarcloud-organization
+          projectKey: your-sonarcloud-project-key
+        env:
+          SONAR_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+
+      # Vulnerability scanning using Trivy
+      - name: Run vulnerability scan using Trivy
+        run: |
+          docker pull ${{ secrets.DOCKER_USERNAME }}/my-app:latest
+          trivy image --exit-code 1 --severity HIGH,CRITICAL ${{ secrets.DOCKER_USERNAME }}/my-app:latest || true
+
+      # Build Docker Image
+      - name: Build Docker image
+        run: |
+          docker build -t my-app:latest .
+
+      # Optimize Docker Image
+      - name: Optimize Docker image
+        run: |
+          docker build --target production -t my-app:optimized .
+
+      # Scan the Docker image again for vulnerabilities
+      - name: Scan Docker image
+        run: |
+          trivy image --exit-code 1 --severity HIGH,CRITICAL my-app:latest || true
+
+      # Push Docker image to DockerHub
+      - name: Push Docker image to DockerHub
+        run: |
+          docker tag my-app:latest ${{ secrets.DOCKER_USERNAME }}/my-app:latest
+          docker push ${{ secrets.DOCKER_USERNAME }}/my-app:latest
+
+      # Push Docker image to AWS ECR
+      - name: Push Docker image to AWS ECR
+        run: |
+          aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com
+          docker tag my-app:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/my-app:latest
+          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-west-2.amazonaws.com/my-app:latest
+
+      # Upload Reports to JFrog Artifactory
+      - name: Upload test results and reports to JFrog Artifactory
+        run: |
+          curl -u ${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASS }} -X PUT "https://your-jfrog-instance.jfrog.io/artifactory/your-repo-name/unit-test-reports/${GITHUB_SHA}.xml" -T target/test-classes/test-*.xml
+          curl -u ${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASS }} -X PUT "https://your-jfrog-instance.jfrog.io/artifactory/your-repo-name/code-coverage-reports/${GITHUB_SHA}.xml" -T target/site/jacoco/jacoco.xml
+          curl -u ${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASS }} -X PUT "https://your-jfrog-instance.jfrog.io/artifactory/your-repo-name/sonarqube-reports/${GITHUB_SHA}.json" -T target/sonar-report.json
+          curl -u ${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASS }} -X PUT "https://your-jfrog-instance.jfrog.io/artifactory/your-repo-name/vulnerability-reports/${GITHUB_SHA}.json" -T trivy-report.json
+
+      # Upload Reports to AWS S3
+      - name: Upload reports to AWS S3
+        run: |
+          aws s3 cp target/test-classes/test-*.xml s3://your-s3-bucket/unit-test-reports/${GITHUB_SHA}/ --recursive
+          aws s3 cp target/site/jacoco/jacoco.xml s3://your-s3-bucket/code-coverage-reports/${GITHUB_SHA}/
+          aws s3 cp target/sonar-report.json s3://your-s3-bucket/sonarqube-reports/${GITHUB_SHA}/
+          aws s3 cp trivy-report.json s3://your-s3-bucket/vulnerability-reports/${GITHUB_SHA}/
